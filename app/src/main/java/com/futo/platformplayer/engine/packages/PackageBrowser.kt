@@ -2,6 +2,7 @@ package com.futo.platformplayer.engine.packages
 
 import android.annotation.SuppressLint
 import android.graphics.Bitmap
+import android.net.Uri
 import android.os.Looper
 import android.util.Log
 import android.webkit.ConsoleMessage
@@ -41,12 +42,16 @@ import okhttp3.OkHttpClient
 import okhttp3.Request
 import java.io.ByteArrayInputStream
 import java.nio.charset.Charset
+import androidx.core.net.toUri
 
 class PackageBrowser: V8Package {
     val useAddDocumentStartJavaScript = true
 
     override val name: String get() = "Browser";
     override val variableName: String = "browser";
+
+    @Volatile private var _loadToken: String? = null
+    @Volatile private var _expectedMainUrl: String? = null
 
     private val _json = Json { };
 
@@ -157,9 +162,14 @@ class PackageBrowser: V8Package {
 
                 override fun onPageCommitVisible(view: WebView?, url: String?) {
                     super.onPageCommitVisible(view, url)
-                    _readySemaphore?.release();
-                    _readySemaphore = null;
-                    Logger.i("PackageBrowser", "Browser loaded");
+                    Logger.i("PackageBrowser", "Browser loaded (commit visible): $url")
+                    releaseReadyIfCurrent(url)
+                }
+
+                override fun onPageFinished(view: WebView?, url: String?) {
+                    super.onPageFinished(view, url)
+                    Logger.i("PackageBrowser", "Browser loaded (finished): $url")
+                    releaseReadyIfCurrent(url)
                 }
 
                 override fun shouldOverrideUrlLoading(view: WebView?, request: WebResourceRequest?): Boolean {
@@ -275,12 +285,26 @@ class PackageBrowser: V8Package {
 
     @V8Function
     fun load(url: String) {
-        Logger.i("PackageBrowser", "Browser loading url [${url}]");
-        _readySemaphore = Semaphore(1, 1);
+        Logger.i("PackageBrowser", "Browser loading url [$url]")
+        val token = UUID.randomUUID().toString()
+        _loadToken = token
+        _expectedMainUrl = url
+        _readySemaphore = Semaphore(1, acquiredPermits = 1)
+
         StateApp.instance.scope.launch(Dispatchers.Main) {
             try { browser.loadUrl(url) }
             catch (t: Throwable) { Logger.e("PackageBrowser", "loadUrl failed", t) }
         }
+    }
+
+    private fun releaseReadyIfCurrent(url: String?) {
+        if (url == null) return
+        val expected = _expectedMainUrl
+        if (url.toUri().host != expected?.toUri()?.host) return
+
+        _readySemaphore?.release()
+        _readySemaphore = null
+        _expectedMainUrl = null
     }
 
     @V8Function
