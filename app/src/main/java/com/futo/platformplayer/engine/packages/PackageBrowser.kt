@@ -33,6 +33,7 @@ import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
+import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
@@ -60,8 +61,6 @@ class PackageBrowser: V8Package {
     @Transient
     private val _callbacks = mutableMapOf<String, (String?)->Unit>();
     @Transient
-    private val _interop = JSInterop(this);
-    @Transient
     private var _browser: WebView? = null;
     private val browser: WebView get() {
         if(_browser == null)
@@ -81,112 +80,159 @@ class PackageBrowser: V8Package {
     }
     @V8Function
     fun initialize() {
-        if(_browser == null){
-            StateApp.instance.scope.launch(Dispatchers.Main) {
-                _browser = WebView(StateApp.instance.contextOrNull ?: return@launch);
-                _userAgent = _browser?.settings?.userAgentString.orEmpty()
-                _browser?.settings?.javaScriptEnabled = true;
-                _browser?.settings?.blockNetworkImage = false;
-                _browser?.settings?.blockNetworkLoads = false;
-                _browser?.settings?.allowContentAccess = false;
-                _browser?.settings?.allowFileAccess = false;
-                //_browser?.settings?.useWideViewPort = true;
-                //_browser?.settings?.loadWithOverviewMode = true;
-                _browser?.webViewClient = object : WebViewClient() {
-                    override fun shouldInterceptRequest(view: WebView?, request: WebResourceRequest?): WebResourceResponse? {
-                        if (view == null || request == null) return null
+        if (_browser != null) return
 
-                        if (useAddDocumentStartJavaScript && WebViewFeature.isFeatureSupported(WebViewFeature.DOCUMENT_START_SCRIPT)) return null
-                        if (!request.isForMainFrame) return null
-                        if (!request.method.equals("GET", ignoreCase = true)) return null
+        onMainBlocking {
+            _browser = WebView(StateApp.instance.contextOrNull ?: return@onMainBlocking);
+            _userAgent = _browser?.settings?.userAgentString.orEmpty()
+            _browser?.settings?.javaScriptEnabled = true;
+            _browser?.settings?.blockNetworkImage = false;
+            _browser?.settings?.blockNetworkLoads = false;
+            _browser?.settings?.allowContentAccess = false;
+            _browser?.settings?.allowFileAccess = false;
+            //_browser?.settings?.useWideViewPort = true;
+            //_browser?.settings?.loadWithOverviewMode = true;
+            _browser?.webViewClient = object : WebViewClient() {
+                override fun shouldInterceptRequest(view: WebView?, request: WebResourceRequest?): WebResourceResponse? {
+                    if (view == null || request == null) return null
 
-                        val url = request.url?.toString() ?: return null
-                        Log.i("PackageBrowser", "shouldInterceptRequest: " + url)
-                        val scheme = request.url?.scheme ?: return null
-                        if (scheme != "http" && scheme != "https") return null
+                    if (useAddDocumentStartJavaScript && WebViewFeature.isFeatureSupported(WebViewFeature.DOCUMENT_START_SCRIPT)) return null
+                    if (!request.isForMainFrame) return null
+                    if (!request.method.equals("GET", ignoreCase = true)) return null
 
-                        val scripts = _pageLoadScriptsFallback.values.toList()
-                        if (scripts.isEmpty()) return null
+                    val url = request.url?.toString() ?: return null
+                    Log.i("PackageBrowser", "shouldInterceptRequest: " + url)
+                    val scheme = request.url?.scheme ?: return null
+                    if (scheme != "http" && scheme != "https") return null
 
-                        return try {
-                            val cookie = request.requestHeaders["Cookie"] ?: runCatching { CookieManager.getInstance().getCookie(url) }.getOrNull()
-                            val ua = request.requestHeaders["User-Agent"] ?: _userAgent
+                    val scripts = _pageLoadScriptsFallback.values.toList()
+                    if (scripts.isEmpty()) return null
 
-                            val okReq = Request.Builder()
-                                .url(url)
-                                .get()
-                                .header("User-Agent", ua)
-                                .apply { if (!cookie.isNullOrEmpty()) header("Cookie", cookie) }
-                                .build()
+                    return try {
+                        val cookie = request.requestHeaders["Cookie"] ?: runCatching { CookieManager.getInstance().getCookie(url) }.getOrNull()
+                        val ua = request.requestHeaders["User-Agent"] ?: _userAgent
 
-                            http.newCall(okReq).execute().use { resp ->
-                                val code = resp.code
-                                val reason = resp.message.ifBlank { "OK" }
-                                if (code in 300..399) return null
+                        val okReq = Request.Builder()
+                            .url(url)
+                            .get()
+                            .header("User-Agent", ua)
+                            .apply { if (!cookie.isNullOrEmpty()) header("Cookie", cookie) }
+                            .build()
 
-                                val contentType = resp.header("Content-Type") ?: ""
-                                val isHtml =
-                                    contentType.startsWith("text/html", ignoreCase = true) ||
-                                            contentType.startsWith("application/xhtml+xml", ignoreCase = true)
+                        http.newCall(okReq).execute().use { resp ->
+                            val code = resp.code
+                            val reason = resp.message.ifBlank { "OK" }
+                            if (code in 300..399) return null
 
-                                if (!isHtml) return null
+                            val contentType = resp.header("Content-Type") ?: ""
+                            val isHtml =
+                                contentType.startsWith("text/html", ignoreCase = true) ||
+                                        contentType.startsWith("application/xhtml+xml", ignoreCase = true)
 
-                                val bodyBytes = resp.body.bytes()
-                                val charset = charsetFromContentType(contentType) ?: Charsets.UTF_8
-                                val html = bodyBytes.toString(charset)
+                            if (!isHtml) return null
 
-                                val injected = injectIntoHead(html, scripts.joinToString("\n"))
-                                val outBytes = injected.toByteArray(charset)
-                                val headers = resp.headers.toMultimap()
-                                    .mapValues { it.value.joinToString(",") }
-                                    .toMutableMap()
+                            val bodyBytes = resp.body.bytes()
+                            val charset = charsetFromContentType(contentType) ?: Charsets.UTF_8
+                            val html = bodyBytes.toString(charset)
 
-                                headers.remove("Content-Length")
-                                val cookieMgr = CookieManager.getInstance()
-                                resp.headers.values("Set-Cookie").forEach { sc ->
-                                    try { cookieMgr.setCookie(url, sc) } catch (_: Throwable) {}
-                                }
-                                try { cookieMgr.flush() } catch (_: Throwable) {}
+                            val injected = injectIntoHead(html, scripts.joinToString("\n"))
+                            val outBytes = injected.toByteArray(charset)
+                            val headers = resp.headers.toMultimap()
+                                .mapValues { it.value.joinToString(",") }
+                                .toMutableMap()
 
-                                WebResourceResponse("text/html", charset.name(), code, reason, headers, ByteArrayInputStream(outBytes))
+                            headers.remove("Content-Length")
+                            val cookieMgr = CookieManager.getInstance()
+                            resp.headers.values("Set-Cookie").forEach { sc ->
+                                try { cookieMgr.setCookie(url, sc) } catch (_: Throwable) {}
                             }
-                        } catch (_: Throwable) {
-                            null
+                            try { cookieMgr.flush() } catch (_: Throwable) {}
+
+                            WebResourceResponse("text/html", charset.name(), code, reason, headers, ByteArrayInputStream(outBytes))
                         }
-                    }
-
-                    override fun onPageCommitVisible(view: WebView?, url: String?) {
-                        super.onPageCommitVisible(view, url)
-                        _readySemaphore?.release();
-                        _readySemaphore = null;
-                        Logger.i("PackageBrowser", "Browser loaded");
-                    }
-
-                    override fun shouldOverrideUrlLoading(view: WebView?, request: WebResourceRequest?): Boolean {
-                        return false;
+                    } catch (_: Throwable) {
+                        null
                     }
                 }
-                _browser?.webChromeClient = object : WebChromeClient() {
-                    override fun onConsoleMessage(consoleMessage: ConsoleMessage?): Boolean {
-                        if(consoleMessage?.messageLevel() == ConsoleMessage.MessageLevel.ERROR) {
-                            val msg = "Browser Error:${consoleMessage.message()} [${consoleMessage.lineNumber()}]"
-                            Logger.e("PackageBrowser", msg);
-                            if(_plugin.config is SourcePluginConfig && _plugin.config.id == StateDeveloper.DEV_ID)
-                                StateDeveloper.instance.logDevException(StateDeveloper.instance.currentDevID ?: "", msg)
-                        }
-                        else {
-                            val msg = ("Browser Log:" + consoleMessage?.message());
-                            Logger.e("PackageBrowser", msg);
-                            if(_plugin.config is SourcePluginConfig && _plugin.config.id == StateDeveloper.DEV_ID)
-                                StateDeveloper.instance.logDevInfo(StateDeveloper.instance.currentDevID ?: "", msg);
-                        }
-                        return super.onConsoleMessage(consoleMessage)
-                    }
+
+                override fun onPageCommitVisible(view: WebView?, url: String?) {
+                    super.onPageCommitVisible(view, url)
+                    _readySemaphore?.release();
+                    _readySemaphore = null;
+                    Logger.i("PackageBrowser", "Browser loaded");
                 }
-                _browser?.addJavascriptInterface(_interop, "__GJ");
+
+                override fun shouldOverrideUrlLoading(view: WebView?, request: WebResourceRequest?): Boolean {
+                    return false;
+                }
             }
-            return;
+            _browser?.webChromeClient = object : WebChromeClient() {
+                override fun onConsoleMessage(consoleMessage: ConsoleMessage?): Boolean {
+                    val raw = consoleMessage?.message().orEmpty()
+
+                    val normalized = raw.trim().let { s ->
+                        if (s.length >= 2 && s.first() == '"' && s.last() == '"') {
+                            s.substring(1, s.length - 1)
+                        } else s
+                    }
+
+                    if (normalized.startsWith(CONSOLE_BRIDGE_PREFIX)) {
+                        val payload = normalized.substring(CONSOLE_BRIDGE_PREFIX.length)
+                        if (handleConsoleBridgeMessage(payload)) return true
+                    }
+
+                    if (consoleMessage?.messageLevel() == ConsoleMessage.MessageLevel.ERROR) {
+                        val emsg = "Browser Error:${consoleMessage.message()} [${consoleMessage.lineNumber()}]"
+                        Logger.e("PackageBrowser", emsg)
+                        if (_plugin.config is SourcePluginConfig && _plugin.config.id == StateDeveloper.DEV_ID)
+                            StateDeveloper.instance.logDevException(StateDeveloper.instance.currentDevID ?: "", emsg)
+                    } else {
+                        val imsg = "Browser Log:${consoleMessage?.message()}"
+                        Logger.i("PackageBrowser", imsg)
+                        if (_plugin.config is SourcePluginConfig && _plugin.config.id == StateDeveloper.DEV_ID)
+                            StateDeveloper.instance.logDevInfo(StateDeveloper.instance.currentDevID ?: "", imsg)
+                    }
+
+                    return super.onConsoleMessage(consoleMessage)
+                }
+            }
         }
+
+        val bootstrap = """
+            (() => {
+              try {
+                if (window.__GJ) return;
+            
+                const PREFIX = ${CONSOLE_BRIDGE_PREFIX.quoteForJs()};
+                const emit = (obj) => {
+                  try {
+                    console.info(PREFIX + JSON.stringify(obj));
+                  } catch (_) {}
+                };
+            
+                Object.defineProperty(window, "__GJ", {
+                  value: {
+                    callback: (id, result) => {
+                      try {
+                        const r = (typeof result === "string")
+                          ? result
+                          : (() => { try { return JSON.stringify(result); } catch (_) { return String(result); } })();
+                        emit({ t: "cb", id: String(id), result: r });
+                      } catch (_) {}
+                    },
+                    log: (msg) => {
+                      try { emit({ t: "log", msg: String(msg) }); } catch (_) {}
+                    }
+                  },
+                  enumerable: false,
+                  configurable: false,
+                  writable: false
+                });
+              } catch (_) {}
+            })();
+            """.trimIndent()
+
+        addScriptOnLoad(bootstrap)
     }
     @V8Function
     fun deinitialize() {
@@ -232,9 +278,8 @@ class PackageBrowser: V8Package {
         Logger.i("PackageBrowser", "Browser loading url [${url}]");
         _readySemaphore = Semaphore(1, 1);
         StateApp.instance.scope.launch(Dispatchers.Main) {
-            try {
-                browser.loadUrl(url);
-            } catch(ex: Throwable) {}
+            try { browser.loadUrl(url) }
+            catch (t: Throwable) { Logger.e("PackageBrowser", "loadUrl failed", t) }
         }
     }
 
@@ -398,23 +443,52 @@ class PackageBrowser: V8Package {
         }
     }
 
-    class JSInterop(private val pack: PackageBrowser) {
+    @Serializable
+    private data class ConsoleBridgeMsg(
+        val t: String,
+        val id: String? = null,
+        val result: String? = null,
+        val msg: String? = null
+    )
 
-        @JavascriptInterface
-        fun callback(id: String, result: String) {
-            Logger.i("PackageBrowser", "Browser Callback [${id}]: ${result}");
-            val callback = synchronized(pack._callbacks) { pack._callbacks.remove(id); };
-            if(callback != null) {
-                StateApp.instance.scopeOrNull?.launch(Dispatchers.IO) {
-                    callback.invoke(result);
-                }
+
+    private fun handleConsoleBridgeMessage(payload: String): Boolean {
+        Logger.i("PackageBrowser", "handleConsoleBridgeMessage: " + payload)
+
+        val parsed = runCatching { _json.decodeFromString<ConsoleBridgeMsg>(payload) }.getOrNull()
+            ?: return false
+
+        when (parsed.t) {
+            "cb" -> {
+                val id = parsed.id ?: return true
+                val res = parsed.result
+
+                val cb = synchronized(_callbacks) { _callbacks.remove(id) } ?: return true
+                StateApp.instance.scopeOrNull?.launch(Dispatchers.IO) { cb.invoke(res) }
+                return true
             }
+            "log" -> {
+                val text = parsed.msg.orEmpty()
+                Logger.i("PackageBrowser", "Browser Log: $text")
+                if (_plugin.config is SourcePluginConfig && _plugin.config.id == StateDeveloper.DEV_ID) {
+                    StateDeveloper.instance.logDevInfo(StateDeveloper.instance.currentDevID ?: "", text)
+                }
+                return true
+            }
+            else -> return true
         }
+    }
 
-        @JavascriptInterface
-        fun log(msg: String) {
-            Logger.i("PackageBrowser", "Log: " + msg);
+    private companion object {
+        private const val CONSOLE_BRIDGE_PREFIX = "__GJ__:"
+
+        private fun String.quoteForJs(): String {
+            val s = this
+                .replace("\\", "\\\\")
+                .replace("\"", "\\\"")
+                .replace("\n", "\\n")
+                .replace("\r", "\\r")
+            return "\"$s\""
         }
-
     }
 }
