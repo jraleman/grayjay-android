@@ -140,7 +140,12 @@ class PackageBrowser: V8Package {
                             val charset = charsetFromContentType(contentType) ?: Charsets.UTF_8
                             val html = bodyBytes.toString(charset)
 
-                            val injected = injectIntoHead(html, scripts.joinToString("\n"))
+                            val cspHeader = resp.header("Content-Security-Policy")
+                                ?: resp.header("Content-Security-Policy-Report-Only")
+
+                            val nonce = extractNonceFromCsp(cspHeader) ?: extractNonceFromHtml(html)
+
+                            val injected = injectIntoHead(html, scripts.joinToString("\n"), nonce)
                             val outBytes = injected.toByteArray(charset)
                             val headers = resp.headers.toMultimap()
                                 .mapValues { it.value.joinToString(",") }
@@ -300,7 +305,7 @@ class PackageBrowser: V8Package {
     private fun releaseReadyIfCurrent(url: String?) {
         if (url == null) return
         val expected = _expectedMainUrl
-        if (url.toUri().host != expected?.toUri()?.host) return
+        if (url.trimEnd('/') != expected?.trimEnd('/')) return
 
         _readySemaphore?.release()
         _readySemaphore = null
@@ -442,8 +447,9 @@ class PackageBrowser: V8Package {
         return runCatching { Charset.forName(name) }.getOrNull()
     }
 
-    private fun injectIntoHead(html: String, js: String): String {
-        val tag = "<script>\n$js\n</script>\n"
+    private fun injectIntoHead(html: String, js: String, nonce: String?): String {
+        val nonceAttr = nonce?.let { " nonce=\"${escapeHtmlAttr(it)}\"" } ?: ""
+        val tag = "<script$nonceAttr>\n$js\n</script>\n"
 
         val head = Regex("(?i)<head[^>]*>").find(html)
         if (head != null) {
@@ -455,7 +461,6 @@ class PackageBrowser: V8Package {
                 append(html, i, html.length)
             }
         }
-
         return tag + html
     }
 
@@ -466,6 +471,20 @@ class PackageBrowser: V8Package {
             withContext(Dispatchers.Main) { block() }
         }
     }
+
+    private fun extractNonceFromCsp(csp: String?): String? {
+        if (csp.isNullOrBlank()) return null
+        val m = Regex("(?i)'nonce-([^'\\s;]+)'").find(csp) ?: return null
+        return m.groupValues[1]
+    }
+
+    private fun extractNonceFromHtml(html: String): String? {
+        val m = Regex("(?i)<script[^>]*\\snonce\\s*=\\s*['\"]([^'\"]+)['\"][^>]*>").find(html)
+        return m?.groupValues?.get(1)
+    }
+
+    private fun escapeHtmlAttr(s: String): String =
+        s.replace("&", "&amp;").replace("\"", "&quot;")
 
     @Serializable
     private data class ConsoleBridgeMsg(
