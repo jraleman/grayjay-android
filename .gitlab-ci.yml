@@ -26,7 +26,7 @@ buildAndDeployApkStable:
     expire_in: 30 days
     paths:
       - app/build/outputs/apk/stable/release/*.apk
-
+      
 buildAndDeployPlaystore:
   stage: buildAndDeployPlaystore
   script:
@@ -44,3 +44,14 @@ buildAndDeployPlaystore:
     expire_in: 30 days
     paths:
       - app/build/outputs/bundle/playstoreRelease/*.aab
+
+updateFdroidRepo:
+  stage: updateFdroidRepo
+  only:
+    - tags
+  when: on_success
+  needs:
+    - job: buildAndDeployApkStable
+      artifacts: true
+  script:
+    - python3 update_fdroid_index.py
