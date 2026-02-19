@@ -1,5 +1,13 @@
 #!/bin/sh
+set -eu
+
 DOCUMENT_ROOT=/var/www/html
+MAINT_FILE="$DOCUMENT_ROOT/maintenance.file"
+
+cleanup() {
+  rm -f "$MAINT_FILE"
+}
+trap cleanup EXIT INT TERM
 
 # Sign sources
 echo "Signing all sources..."
@@ -11,12 +19,12 @@ echo "Building content..."
 
 # Take site offline
 echo "Taking site offline..."
-touch $DOCUMENT_ROOT/maintenance.file
+touch "$MAINT_FILE"
 
 # Swap over the content
 echo "Deploying content..."
-cp ./app/build/outputs/bundle/playstoreRelease/app-playstore-release.aab $DOCUMENT_ROOT/app-playstore-release.aab
-aws s3 cp ./app/build/outputs/bundle/playstoreRelease/app-playstore-release.aab s3://artifacts-grayjay-app/app-playstore-release.aab
+cp ./app/build/outputs/bundle/playstoreRelease/app-playstore-release.aab \
+  "$DOCUMENT_ROOT/app-playstore-release.aab"
 
 # Notify Cloudflare to wipe the CDN cache
 echo "Purging Cloudflare cache for zone $CLOUDFLARE_ZONE_ID..."
@@ -29,4 +37,5 @@ sleep 30
 
 # Take site back online
 echo "Bringing site back online..."
-rm $DOCUMENT_ROOT/maintenance.file
+rm -f "$MAINT_FILE"
+trap - EXIT INT TERM

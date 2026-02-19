@@ -1,20 +1,17 @@
-variables:
-  GIT_SUBMODULE_STRATEGY: recursive
-
-stages:
-- buildAndDeployApkUnstable
-- buildAndDeployApkStable
-- buildAndDeployPlaystore
-
 buildAndDeployApkUnstable:
   stage: buildAndDeployApkUnstable
   script:
     - sh deploy-unstable.sh
   only:
     - tags
-  except:
-    - ^(dev)
   when: manual
+  needs: []
+  allow_failure: true
+  artifacts:
+    when: always
+    expire_in: 30 days
+    paths:
+      - app/build/outputs/apk/unstable/release/*.apk
 
 buildAndDeployApkStable:
   stage: buildAndDeployApkStable
@@ -22,16 +19,28 @@ buildAndDeployApkStable:
     - sh deploy-stable.sh
   only:
     - tags
-  except:
-    - branches
   when: manual
+  needs: []
+  artifacts:
+    when: always
+    expire_in: 30 days
+    paths:
+      - app/build/outputs/apk/stable/release/*.apk
 
 buildAndDeployPlaystore:
   stage: buildAndDeployPlaystore
   script:
-    - sh deploy-playstore.sh
+    - sh build-playstore.sh
+    - bash tools/venv_playstore.sh
+    - . .venv-playstore/bin/activate
+    - python publish_playstore.py --sa /root/grayjay.json --package com.futo.platformplayer.playstore --aab ./app/build/outputs/bundle/playstoreRelease/app-playstore-release.aab --track production --status completed
   only:
     - tags
-  except:
-    - branches
-  when: manual
+  when: on_success
+  needs:
+      - buildAndDeployApkStable
+  artifacts:
+    when: always
+    expire_in: 30 days
+    paths:
+      - app/build/outputs/bundle/playstoreRelease/*.aab

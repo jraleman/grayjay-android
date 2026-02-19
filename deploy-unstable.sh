@@ -1,5 +1,13 @@
 #!/bin/sh
+set -eu
+
 DOCUMENT_ROOT=/var/www/html
+MAINT_FILE="$DOCUMENT_ROOT/maintenance.file"
+
+cleanup() {
+  rm -f "$MAINT_FILE"
+}
+trap cleanup EXIT INT TERM
 
 # Sign sources
 echo "Signing all sources..."
@@ -11,27 +19,19 @@ echo "Building content..."
 
 # Take site offline
 echo "Taking site offline..."
-touch $DOCUMENT_ROOT/maintenance.file
+touch "$MAINT_FILE"
 
 # Swap over the content
 echo "Deploying content..."
-cp ./app/build/outputs/apk/unstable/release/app-unstable-x86_64-release.apk $DOCUMENT_ROOT/app-x86_64-release-unstable.apk
-cp ./app/build/outputs/apk/unstable/release/app-unstable-arm64-v8a-release.apk $DOCUMENT_ROOT/app-arm64-v8a-release-unstable.apk
-cp ./app/build/outputs/apk/unstable/release/app-unstable-armeabi-v7a-release.apk $DOCUMENT_ROOT/app-armeabi-v7a-release-unstable.apk
-cp ./app/build/outputs/apk/unstable/release/app-unstable-universal-release.apk $DOCUMENT_ROOT/app-universal-release-unstable.apk
-cp ./app/build/outputs/apk/unstable/release/app-unstable-x86-release.apk $DOCUMENT_ROOT/app-x86-release-unstable.apk
-cp ./app/build/outputs/apk/unstable/release/app-unstable-arm64-v8a-release.apk $DOCUMENT_ROOT/app-release-unstable.apk
-git describe --tags > $DOCUMENT_ROOT/version-unstable.txt
+cp ./app/build/outputs/apk/unstable/release/app-unstable-x86_64-release.apk "$DOCUMENT_ROOT/app-x86_64-release-unstable.apk"
+cp ./app/build/outputs/apk/unstable/release/app-unstable-arm64-v8a-release.apk "$DOCUMENT_ROOT/app-arm64-v8a-release-unstable.apk"
+cp ./app/build/outputs/apk/unstable/release/app-unstable-armeabi-v7a-release.apk "$DOCUMENT_ROOT/app-armeabi-v7a-release-unstable.apk"
+cp ./app/build/outputs/apk/unstable/release/app-unstable-universal-release.apk "$DOCUMENT_ROOT/app-universal-release-unstable.apk"
+cp ./app/build/outputs/apk/unstable/release/app-unstable-x86-release.apk "$DOCUMENT_ROOT/app-x86-release-unstable.apk"
+cp ./app/build/outputs/apk/unstable/release/app-unstable-arm64-v8a-release.apk "$DOCUMENT_ROOT/app-release-unstable.apk"
 
-aws s3 cp ./app/build/outputs/apk/unstable/release/app-unstable-x86_64-release.apk s3://artifacts-grayjay-app/app-x86_64-release-unstable.apk
-aws s3 cp ./app/build/outputs/apk/unstable/release/app-unstable-arm64-v8a-release.apk s3://artifacts-grayjay-app/app-arm64-v8a-release-unstable.apk
-aws s3 cp ./app/build/outputs/apk/unstable/release/app-unstable-armeabi-v7a-release.apk s3://artifacts-grayjay-app/app-armeabi-v7a-release-unstable.apk
-aws s3 cp ./app/build/outputs/apk/unstable/release/app-unstable-universal-release.apk s3://artifacts-grayjay-app/app-universal-release-unstable.apk
-aws s3 cp ./app/build/outputs/apk/unstable/release/app-unstable-x86-release.apk s3://artifacts-grayjay-app/app-x86-release-unstable.apk
-aws s3 cp ./app/build/outputs/apk/unstable/release/app-unstable-arm64-v8a-release.apk s3://artifacts-grayjay-app/app-release-unstable.apk
-
-git describe --tags > ./version-unstable.txt
-aws s3 cp ./version-unstable.txt s3://artifacts-grayjay-app/version-unstable.txt
+VERSION="$(git describe --tags)"
+echo "$VERSION" > "$DOCUMENT_ROOT/version-unstable.txt"
 
 # Notify Cloudflare to wipe the CDN cache
 echo "Purging Cloudflare cache for zone $CLOUDFLARE_ZONE_ID..."
@@ -44,4 +44,5 @@ sleep 30
 
 # Take site back online
 echo "Bringing site back online..."
-rm $DOCUMENT_ROOT/maintenance.file
+rm -f "$MAINT_FILE"
+trap - EXIT INT TERM
