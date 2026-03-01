@@ -263,8 +263,8 @@ class DownloadsFragment : MainFragment() {
                     "releasedDesc" -> vidsToReturn.sortedByDescending { it.datetime ?: OffsetDateTime.MIN }
                     "sizeAsc" -> vidsToReturn.sortedBy { it.videoSource.sumOf { it.fileSize } + it.audioSource.sumOf { it.fileSize } }
                     "sizeDesc" -> vidsToReturn.sortedByDescending { it.videoSource.sumOf { it.fileSize } + it.audioSource.sumOf { it.fileSize } }
-                    "typeAudio" -> vidsToReturn.filter { it.videoSource.isEmpty() && it.audioSource.isNotEmpty() }
-                    "typeVideo" -> vidsToReturn.filter { it.videoSource.isNotEmpty() }
+                    "typeAudio" -> vidsToReturn.sortedBy { if (it.videoSource.isEmpty() && it.audioSource.isNotEmpty()) 0 else 1 }
+                    "typeVideo" -> vidsToReturn.sortedBy { if (it.videoSource.isNotEmpty()) 0 else 1 }
                     else -> vidsToReturn
                 }
             }
